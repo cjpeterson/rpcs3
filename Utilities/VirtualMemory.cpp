@@ -11,35 +11,78 @@
 #include <sys/types.h>
 #endif
 
-namespace memory_helper
+namespace utils
 {
-	void* reserve_memory(size_t size)
+	// Convert memory protection (internal)
+	static auto operator +(protection prot)
 	{
 #ifdef _WIN32
-		void* ret = VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
-		CHECK_ASSERTION(ret != NULL);
+		DWORD _prot = PAGE_NOACCESS;
+		switch (prot)
+		{
+		case protection::rw: _prot = PAGE_READWRITE; break;
+		case protection::ro: _prot = PAGE_READONLY; break;
+		case protection::no: break;
+		case protection::wx: _prot = PAGE_EXECUTE_READWRITE; break;
+		case protection::rx: _prot = PAGE_EXECUTE_READ; break;
+		}
 #else
-		void* ret = mmap(nullptr, size, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
-		CHECK_ASSERTION(ret != 0);
+		int _prot = PROT_NONE;
+		switch (prot)
+		{
+		case protection::rw: _prot = PROT_READ | PROT_WRITE; break;
+		case protection::ro: _prot = PROT_READ; break;
+		case protection::no: break;
+		case protection::wx: _prot = PROT_READ | PROT_WRITE | PROT_EXEC; break;
+		case protection::rx: _prot = PROT_READ | PROT_EXEC; break;
+		}
 #endif
-		return ret;
+
+		return _prot;
 	}
 
-	void commit_page_memory(void* pointer, size_t page_size)
+	void* memory_reserve(std::size_t size, void* use_addr)
 	{
 #ifdef _WIN32
-		CHECK_ASSERTION(VirtualAlloc((u8*)pointer, page_size, MEM_COMMIT, PAGE_READWRITE) != NULL);
+		return ::VirtualAlloc(use_addr, size, MEM_RESERVE, PAGE_NOACCESS);
 #else
-		CHECK_ASSERTION(mprotect((u8*)pointer, page_size, PROT_READ | PROT_WRITE) != -1);
+		auto ptr = ::mmap(use_addr, size, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+
+		if (use_addr && ptr != use_addr)
+		{
+			::munmap(ptr, size);
+			return nullptr;
+		}
+
+		return ptr;
 #endif
 	}
 
-	void free_reserved_memory(void* pointer, size_t size)
+	void memory_commit(void* pointer, std::size_t size, protection prot)
 	{
 #ifdef _WIN32
-		CHECK_ASSERTION(VirtualFree(pointer, 0, MEM_RELEASE) != 0);
+		verify(HERE), ::VirtualAlloc(pointer, size, MEM_COMMIT, +prot);
 #else
-		CHECK_ASSERTION(munmap(pointer, size) == 0);
+		verify(HERE), ::mprotect((void*)((u64)pointer & -4096), ::align(size, 4096), +prot) != -1;
+#endif
+	}
+
+	void memory_decommit(void* pointer, std::size_t size)
+	{
+#ifdef _WIN32
+		verify(HERE), ::VirtualFree(pointer, 0, MEM_DECOMMIT);
+#else
+		verify(HERE), ::mmap(pointer, size, PROT_NONE, MAP_FIXED | MAP_ANON | MAP_PRIVATE, -1, 0);
+#endif
+	}
+
+	void memory_protect(void* pointer, std::size_t size, protection prot)
+	{
+#ifdef _WIN32
+		DWORD old;
+		verify(HERE), ::VirtualProtect(pointer, size, +prot, &old);
+#else
+		verify(HERE), ::mprotect((void*)((u64)pointer & -4096), ::align(size, 4096), +prot) != -1;
 #endif
 	}
 }

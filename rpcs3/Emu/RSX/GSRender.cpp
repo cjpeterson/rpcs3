@@ -2,9 +2,7 @@
 #include "Emu/Memory/Memory.h"
 #include "Emu/System.h"
 
-#include "GSManager.h"
 #include "GSRender.h"
-
 
 draw_context_t GSFrameBase::new_context()
 {
@@ -16,13 +14,9 @@ draw_context_t GSFrameBase::new_context()
 	return nullptr;
 }
 
-void GSFrameBase::title_message(const std::wstring& msg)
+GSRender::GSRender()
 {
-	m_title_message = msg;
-}
-
-GSRender::GSRender(frame_type type) : m_frame(Emu.GetCallbacks().get_gs_frame(type).release())
-{
+	m_frame = Emu.GetCallbacks().get_gs_frame().release();
 }
 
 GSRender::~GSRender()
@@ -36,7 +30,7 @@ GSRender::~GSRender()
 	}
 }
 
-void GSRender::on_init()
+void GSRender::on_init_rsx()
 {
 	if (m_frame)
 	{

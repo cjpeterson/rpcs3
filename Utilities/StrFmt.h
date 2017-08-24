@@ -1,359 +1,291 @@
 #pragma once
 
-class wxString;
+#include "types.h"
 
-#if defined(_MSC_VER) && _MSC_VER <= 1800
-#define snprintf _snprintf
-#endif
+#include <exception>
+#include <stdexcept>
+#include <string>
 
 namespace fmt
 {
-	//struct empty_t{};
+	template <typename... Args>
+	static std::string format(const char*, const Args&...);
+}
 
-	//extern const std::string placeholder;
+template <typename T, typename>
+struct fmt_unveil
+{
+	static_assert(sizeof(T) > 0, "fmt_unveil<> error: incomplete type");
 
-	template <typename T>
-	std::string AfterLast(const std::string& source, T searchstr)
+	using type = T;
+
+	static inline u64 get(const T& arg)
 	{
-		size_t search_pos = source.rfind(searchstr);
-		search_pos = search_pos == std::string::npos ? 0 : search_pos;
-		return source.substr(search_pos);
+		return reinterpret_cast<std::uintptr_t>(&arg);
 	}
 
-	template <typename T>
-	std::string BeforeLast(const std::string& source, T searchstr)
+	// Temporary value container (can possibly be created by other fmt_unveil<> specializations)
+	struct u64_wrapper
 	{
-		size_t search_pos = source.rfind(searchstr);
-		search_pos = search_pos == std::string::npos ? 0 : search_pos;
-		return source.substr(0, search_pos);
-	}
+		T arg;
 
-	template <typename T>
-	std::string AfterFirst(const std::string& source, T searchstr)
-	{
-		size_t search_pos = source.find(searchstr);
-		search_pos = search_pos == std::string::npos ? 0 : search_pos;
-		return source.substr(search_pos);
-	}
-
-	template <typename T>
-	std::string BeforeFirst(const std::string& source, T searchstr)
-	{
-		size_t search_pos = source.find(searchstr);
-		search_pos = search_pos == std::string::npos ? 0 : search_pos;
-		return source.substr(0, search_pos);
-	}
-
-	// write `fmt` from `pos` to the first occurence of `fmt::placeholder` to
-	// the stream `os`. Then write `arg` to to the stream. If there's no
-	// `fmt::placeholder` after `pos` everything in `fmt` after pos is written
-	// to `os`. Then `arg` is written to `os` after appending a space character
-	//template<typename T>
-	//empty_t write(const std::string &fmt, std::ostream &os, std::string::size_type &pos, T &&arg)
-	//{
-	//	std::string::size_type ins = fmt.find(placeholder, pos);
-
-	//	if (ins == std::string::npos)
-	//	{
-	//		os.write(fmt.data() + pos, fmt.size() - pos);
-	//		os << ' ' << arg;
-
-	//		pos = fmt.size();
-	//	}
-	//	else
-	//	{
-	//		os.write(fmt.data() + pos, ins - pos);
-	//		os << arg;
-
-	//		pos = ins + placeholder.size();
-	//	}
-	//	return{};
-	//}
-
-	// typesafe version of a sprintf-like function. Returns the printed to
-	// string. To mark positions where the arguments are supposed to be
-	// inserted use `fmt::placeholder`. If there's not enough placeholders
-	// the rest of the arguments are appended at the end, seperated by spaces
-	//template<typename  ... Args>
-	//std::string SFormat(const std::string &fmt, Args&& ... parameters)
-	//{
-	//	std::ostringstream os;
-	//	std::string::size_type pos = 0;
-	//	std::initializer_list<empty_t> { write(fmt, os, pos, parameters)... };
-
-	//	if (!fmt.empty())
-	//	{
-	//		os.write(fmt.data() + pos, fmt.size() - pos);
-	//	}
-
-	//	std::string result = os.str();
-	//	return result;
-	//}
-
-	std::string replace_first(const std::string& src, const std::string& from, const std::string& to);
-	std::string replace_all(const std::string &src, const std::string& from, const std::string& to);
-
-	template<size_t list_size>
-	std::string replace_all(std::string src, const std::pair<std::string, std::string>(&list)[list_size])
-	{
-		for (size_t pos = 0; pos < src.length(); ++pos)
+		// Allow implicit conversion
+		operator u64() const
 		{
-			for (size_t i = 0; i < list_size; ++i)
+			return reinterpret_cast<std::uintptr_t>(&arg);
+		}
+	};
+
+	// This overload resolution takes the precedence
+	static inline u64_wrapper get(T&& arg)
+	{
+		return u64_wrapper{std::move(arg)};
+	}
+};
+
+template <typename T>
+struct fmt_unveil<T, std::enable_if_t<std::is_integral<T>::value && sizeof(T) <= 8 && alignof(T) <= 8>>
+{
+	using type = T;
+
+	static inline u64 get(T arg)
+	{
+		return static_cast<T>(arg);
+	}
+};
+
+template <typename T>
+struct fmt_unveil<T, std::enable_if_t<std::is_floating_point<T>::value && sizeof(T) <= 8 && alignof(T) <= 8>>
+{
+	using type = T;
+
+	// Convert FP to f64 and reinterpret as u64
+	static inline u64 get(const f64& arg)
+	{
+		return *reinterpret_cast<const u64*>(reinterpret_cast<const u8*>(&arg));
+	}
+};
+
+template <>
+struct fmt_unveil<f16, void>
+{
+	using type = f16;
+
+	static inline u64 get(const f16& arg)
+	{
+		return fmt_unveil<f64>::get(arg.operator float());
+	}
+};
+
+template <typename T>
+struct fmt_unveil<T, std::enable_if_t<std::is_enum<T>::value>>
+{
+	using type = T;
+
+	static inline u64 get(T arg)
+	{
+		return static_cast<std::underlying_type_t<T>>(arg);
+	}
+};
+
+template <typename T>
+struct fmt_unveil<T*, void>
+{
+	using type = const T*;
+
+	static inline u64 get(const T* arg)
+	{
+		return reinterpret_cast<std::uintptr_t>(arg);
+	}
+};
+
+template <typename T, std::size_t N>
+struct fmt_unveil<T[N], void>
+{
+	using type = const T*;
+
+	static inline u64 get(const T* arg)
+	{
+		return reinterpret_cast<std::uintptr_t>(arg);
+	}
+};
+
+template <>
+struct fmt_unveil<b8, void>
+{
+	using type = bool;
+
+	static inline u64 get(const b8& value)
+	{
+		return fmt_unveil<bool>::get(value);
+	}
+};
+
+// String type format provider, also type classifier (format() called if an argument is formatted as "%s")
+template <typename T, typename = void>
+struct fmt_class_string
+{
+	// Formatting function (must be explicitly specialized)
+	static void format(std::string& out, u64 arg);
+
+	// Helper typedef (visible in format())
+	using type = T;
+
+	// Helper function (converts arg to object reference)
+	static SAFE_BUFFERS FORCE_INLINE const T& get_object(u64 arg)
+	{
+		return *reinterpret_cast<const T*>(static_cast<std::uintptr_t>(arg));
+	}
+
+	// Enum -> string function type
+	using convert_t = const char*(*)(T value);
+
+	// Enum -> string function registered
+	static convert_t convert_enum;
+
+	// Helper function (safely converts arg to enum value)
+	static SAFE_BUFFERS FORCE_INLINE void format_enum(std::string& out, u64 arg, convert_t convert)
+	{
+		// Save convert function
+		if (convert_enum == nullptr)
+		{
+			convert_enum = convert;
+		}
+
+		const auto value = static_cast<std::underlying_type_t<T>>(arg);
+
+		// Check narrowing
+		if (static_cast<u64>(value) == arg)
+		{
+			if (const char* str = convert(static_cast<T>(value)))
 			{
-				const size_t comp_length = list[i].first.length();
+				out += str;
+				return;
+			}
+		}
 
-				if (src.length() - pos < comp_length)
-					continue;
+		// Fallback to underlying type formatting
+		fmt_class_string<std::underlying_type_t<T>>::format(out, static_cast<u64>(value));
+	}
 
-				if (src.substr(pos, comp_length) == list[i].first)
+	// Helper function (bitset formatting)
+	static SAFE_BUFFERS FORCE_INLINE void format_bitset(std::string& out, u64 arg, const char* prefix, const char* delim, const char* suffix, void (*fmt)(std::string&, u64))
+	{
+		// Start from raw value
+		fmt_class_string<u64>::format(out, arg);
+
+		out += prefix;
+
+		for (u64 i = 0; i < 63; i++)
+		{
+			const u64 mask = 1ull << i;
+
+			if (arg & mask)
+			{
+				fmt(out, i);
+
+				if (arg >> (i + 1))
 				{
-					src = (pos ? src.substr(0, pos) + list[i].second : list[i].second) + src.substr(pos + comp_length);
-					pos += list[i].second.length() - 1;
-					break;
+					out += delim;
 				}
 			}
 		}
 
-		return src;
+		if (arg & (1ull << 63))
+		{
+			fmt(out, 63);
+		}
+
+		out += suffix;
 	}
 
-	template<size_t list_size>
-	std::string replace_all(std::string src, const std::pair<std::string, std::function<std::string()>>(&list)[list_size])
+	// Helper constant (may be used in format_enum as lambda return value)
+	static constexpr const char* unknown = nullptr;
+};
+
+template <typename T, typename V>
+const char*(*fmt_class_string<T, V>::convert_enum)(T) = nullptr;
+
+template <>
+struct fmt_class_string<const void*, void>
+{
+	static void format(std::string& out, u64 arg);
+};
+
+template <typename T>
+struct fmt_class_string<T*, void> : fmt_class_string<const void*, void>
+{
+	// Classify all pointers as const void*
+};
+
+template <>
+struct fmt_class_string<const char*, void>
+{
+	static void format(std::string& out, u64 arg);
+};
+
+template <>
+struct fmt_class_string<char*, void> : fmt_class_string<const char*>
+{
+	// Classify char* as const char*
+};
+
+struct fmt_type_info
+{
+	decltype(&fmt_class_string<int>::format) fmt_string;
+
+	template <typename T>
+	static constexpr fmt_type_info make()
 	{
-		for (size_t pos = 0; pos < src.length(); ++pos)
+		return fmt_type_info
 		{
-			for (size_t i = 0; i < list_size; ++i)
-			{
-				const size_t comp_length = list[i].first.length();
-
-				if (src.length() - pos < comp_length)
-					continue;
-
-				if (src.substr(pos, comp_length) == list[i].first)
-				{
-					src = (pos ? src.substr(0, pos) + list[i].second() : list[i].second()) + src.substr(pos + comp_length);
-					pos += list[i].second().length() - 1;
-					break;
-				}
-			}
-		}
-
-		return src;
+			&fmt_class_string<T>::format,
+		};
 	}
+};
 
-	std::string to_hex(u64 value, u64 count = 1);
-	std::string to_udec(u64 value);
-	std::string to_sdec(s64 value);
+// Argument array type (each element generated via fmt_unveil<>)
+template <typename... Args>
+using fmt_args_t = const u64(&&)[sizeof...(Args) + 1];
 
-	template<typename T, bool is_enum = std::is_enum<T>::value> struct unveil
+namespace fmt
+{
+	template <typename... Args>
+	SAFE_BUFFERS FORCE_INLINE const fmt_type_info* get_type_info()
 	{
-		using result_type = T;
-
-		force_inline static result_type get_value(const T& arg)
-		{
-			return arg;
-		}
-	};
-
-	template<> struct unveil<const char*, false>
-	{
-		using result_type = const char* const;
-
-		force_inline static result_type get_value(const char* const& arg)
-		{
-			return arg;
-		}
-	};
-
-	template<std::size_t N> struct unveil<char[N], false>
-	{
-		using result_type = const char* const;
-
-		force_inline static result_type get_value(const char(&arg)[N])
-		{
-			return arg;
-		}
-	};
-
-	template<> struct unveil<std::string, false>
-	{
-		using result_type = const char*;
-
-		force_inline static result_type get_value(const std::string& arg)
-		{
-			return arg.c_str();
-		}
-	};
-
-	template<typename T> struct unveil<T, true>
-	{
-		using result_type = std::underlying_type_t<T>;
-
-		force_inline static result_type get_value(const T& arg)
-		{
-			return static_cast<result_type>(arg);
-		}
-	};
-
-	template<typename T, bool Se> struct unveil<se_t<T, Se>, false>
-	{
-		using result_type = typename unveil<T>::result_type;
-
-		force_inline static result_type get_value(const se_t<T, Se>& arg)
-		{
-			return unveil<T>::get_value(arg);
-		}
-	};
-
-	template<typename T>
-	force_inline typename unveil<T>::result_type do_unveil(const T& arg)
-	{
-		return unveil<T>::get_value(arg);
-	}
-
-	// Formatting function with special functionality:
-	//
-	// std::string is forced to .c_str()
-	// be_t<> is forced to .value() (fmt::do_unveil reverts byte order automatically)
-	//
-	// External specializations for fmt::do_unveil (can be found in another headers):
-	// vm::ptr, vm::bptr, ... (fmt::do_unveil) (vm_ptr.h) (with appropriate address type, using .addr() can be avoided)
-	// vm::ref, vm::bref, ... (fmt::do_unveil) (vm_ref.h)
-	//
-	template<typename... Args>
-	safe_buffers std::string format(const char* fmt, const Args&... args)
-	{
-		// fixed stack buffer for the first attempt
-		std::array<char, 4096> fixed_buf;
-
-		// possibly dynamically allocated buffer for the second attempt
-		std::unique_ptr<char[]> buf;
-
-		// pointer to the current buffer
-		char* buf_addr = fixed_buf.data();
-
-		for (std::size_t buf_size = fixed_buf.size();;)
-		{
-#ifndef _MSC_VER
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-security"
-#endif
-			const std::size_t len = std::snprintf(buf_addr, buf_size, fmt, do_unveil(args)...);
-#ifndef _MSC_VER
-#pragma GCC diagnostic pop
-#endif
-			if (len > INT_MAX)
-			{
-				throw std::runtime_error("std::snprintf() failed");
-			}
-
-			if (len < buf_size)
-			{
-				return{ buf_addr, len };
-			}
-
-			buf.reset(buf_addr = new char[buf_size = len + 1]);
-		}
-	}
-
-	struct exception : public std::exception
-	{
-		std::unique_ptr<char[]> message;
-
-		template<typename... Args> never_inline safe_buffers exception(const char* file, int line, const char* func, const char* text, Args... args) noexcept
-		{
-			const std::string data = format(text, args...) + format("\n(in file %s:%d, in function %s)", file, line, func);
-
-			message.reset(new char[data.size() + 1]);
-
-			std::memcpy(message.get(), data.c_str(), data.size() + 1);
-		}
-
-		exception(const exception& other) noexcept
-		{
-			const std::size_t size = std::strlen(other.message.get());
-
-			message.reset(new char[size + 1]);
-
-			std::memcpy(message.get(), other.message.get(), size + 1);
-		}
-
-		virtual const char* what() const noexcept override
-		{
-			return message.get();
-		}
-	};
-
-	//convert a wxString to a std::string encoded in utf8
-	//CAUTION, only use this to interface with wxWidgets classes
-	std::string ToUTF8(const wxString& right);
-
-	//convert a std::string encoded in utf8 to a wxString
-	//CAUTION, only use this to interface with wxWidgets classes
-	wxString FromUTF8(const std::string& right);
-
-	//TODO: remove this after every snippet that uses it is gone
-	//WARNING: not fully compatible with CmpNoCase from wxString
-	int CmpNoCase(const std::string& a, const std::string& b);
-
-	//TODO: remove this after every snippet that uses it is gone
-	//WARNING: not fully compatible with Replace from wxString
-	void Replace(std::string &str, const std::string &searchterm, const std::string& replaceterm);
-
-	std::vector<std::string> rSplit(const std::string& source, const std::string& delim);
-
-	std::vector<std::string> split(const std::string& source, std::initializer_list<std::string> separators, bool is_skip_empty = true);
-	std::string trim(const std::string& source, const std::string& values = " \t");
-
-	template<typename T>
-	std::string merge(const T& source, const std::string& separator)
-	{
-		if (!source.size())
-		{
-			return{};
-		}
-
-		std::string result;
-
-		auto it = source.begin();
-		auto end = source.end();
-		for (--end; it != end; ++it)
-		{
-			result += *it + separator;
-		}
-
-		return result + source.back();
-	}
-
-	template<typename T>
-	std::string merge(std::initializer_list<T> sources, const std::string& separator)
-	{
-		if (!sources.size())
-		{
-			return{};
-		}
-
-		std::string result;
-		bool first = true;
-
-		for (auto &v : sources)
-		{
-			if (first)
-			{
-				result = fmt::merge(v, separator);
-				first = false;
-			}
-			else
-			{
-				result += separator + fmt::merge(v, separator);
-			}
-		}
+		// Constantly initialized null-terminated list of type-specific information
+		static constexpr fmt_type_info result[sizeof...(Args) + 1]{fmt_type_info::make<Args>()...};
 
 		return result;
 	}
 
-	std::string tolower(std::string source);
-	std::string toupper(std::string source);
-	std::string escape(std::string source);
-	bool match(const std::string &source, const std::string &mask);
+	// Internal formatting function
+	void raw_append(std::string& out, const char*, const fmt_type_info*, const u64*) noexcept;
+
+	// Formatting function
+	template <typename... Args>
+	SAFE_BUFFERS FORCE_INLINE void append(std::string& out, const char* fmt, const Args&... args)
+	{
+		raw_append(out, fmt, fmt::get_type_info<fmt_unveil_t<Args>...>(), fmt_args_t<Args...>{fmt_unveil<Args>::get(args)...});
+	}
+
+	// Formatting function
+	template <typename... Args>
+	SAFE_BUFFERS FORCE_INLINE std::string format(const char* fmt, const Args&... args)
+	{
+		std::string result;
+		append<Args...>(result, fmt, args...);
+		return result;
+	}
+
+	// Internal exception message formatting template, must be explicitly specialized or instantiated in cpp to minimize code bloat
+	template <typename T>
+	[[noreturn]] void raw_throw_exception(const char*, const fmt_type_info*, const u64*);
+
+	// Throw exception with formatting
+	template <typename T = std::runtime_error, typename... Args>
+	[[noreturn]] SAFE_BUFFERS FORCE_INLINE void throw_exception(const char* fmt, const Args&... args)
+	{
+		raw_throw_exception<T>(fmt, fmt::get_type_info<fmt_unveil_t<Args>...>(), fmt_args_t<Args...>{fmt_unveil<Args>::get(args)...});
+	}
 }

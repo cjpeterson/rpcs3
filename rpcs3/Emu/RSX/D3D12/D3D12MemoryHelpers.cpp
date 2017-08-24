@@ -1,7 +1,8 @@
+#ifdef _MSC_VER
 #include "stdafx.h"
 #include "stdafx_d3d12.h"
-#ifdef _MSC_VER
 #include "D3D12MemoryHelpers.h"
+#include "Utilities/VirtualMemory.h"
 
 
 void data_cache::store_and_protect_data(u64 key, u32 start, size_t size, u8 format, size_t w, size_t h, size_t d, size_t m, ComPtr<ID3D12Resource> data)
@@ -18,11 +19,13 @@ void data_cache::protect_data(u64 key, u32 start, size_t size)
 	u32 protected_range_start = start & ~(memory_page_size - 1);
 	u32 protected_range_size = (u32)align(size, memory_page_size);
 	m_protected_ranges.push_back(std::make_tuple(key, protected_range_start, protected_range_size));
-	vm::page_protect(protected_range_start, protected_range_size, 0, 0, vm::page_writable);
+	utils::memory_protect(vm::base(protected_range_start), protected_range_size, utils::protection::ro);
 }
 
 bool data_cache::invalidate_address(u32 addr)
 {
+	// In case 2 threads write to texture memory
+	std::lock_guard<std::mutex> lock(m_mut);
 	bool handled = false;
 	auto It = m_protected_ranges.begin(), E = m_protected_ranges.end();
 	for (; It != E;)
@@ -33,11 +36,10 @@ bool data_cache::invalidate_address(u32 addr)
 		u32 protectedRangeStart = std::get<1>(protectedTexture), protectedRangeSize = std::get<2>(protectedTexture);
 		if (addr >= protectedRangeStart && addr <= protectedRangeSize + protectedRangeStart)
 		{
-			std::lock_guard<std::mutex> lock(m_mut);
 			u64 texadrr = std::get<0>(protectedTexture);
 			m_address_to_data[texadrr].first.m_is_dirty = true;
 
-			vm::page_protect(protectedRangeStart, protectedRangeSize, 0, vm::page_writable, 0);
+			utils::memory_protect(vm::base(protectedRangeStart), protectedRangeSize, utils::protection::rw);
 			m_protected_ranges.erase(currentIt);
 			handled = true;
 		}
@@ -60,7 +62,7 @@ void data_cache::unprotect_all()
 	for (auto &protectedTexture : m_protected_ranges)
 	{
 		u32 protectedRangeStart = std::get<1>(protectedTexture), protectedRangeSize = std::get<2>(protectedTexture);
-		vm::page_protect(protectedRangeStart, protectedRangeSize, 0, vm::page_writable, 0);
+		utils::memory_protect(vm::base(protectedRangeStart), protectedRangeSize, utils::protection::rw);
 	}
 }
 

@@ -1,77 +1,85 @@
 #pragma once
 
-#include "SharedMutex.h"
+#include "types.h"
+#include "Atomic.h"
+#include "StrFmt.h"
+#include <climits>
 
-namespace _log
+namespace logs
 {
 	enum class level : uint
 	{
-		always, // highest level (unused, cannot be disabled)
+		always, // Highest log severity (unused, cannot be disabled)
 		fatal,
 		error,
 		todo,
 		success,
 		warning,
 		notice,
-		trace, // lowest level (usually disabled)
+		trace, // Lowest severity (usually disabled)
+
+		_uninit = UINT_MAX, // Special value for delayed initialization
 	};
 
 	struct channel;
-	struct listener;
 
-	// Log manager
-	class logger final
+	// Message information (temporary data)
+	struct message
 	{
-		mutable shared_mutex m_mutex;
+		channel* ch;
+		level sev;
 
-		std::set<listener*> m_listeners;
-
-	public:
-		// Register listener
-		void add_listener(listener* listener);
-
-		// Unregister listener
-		void remove_listener(listener* listener);
-
-		// Send log message to all listeners
-		void broadcast(const channel& ch, level sev, const std::string& text) const;
+		// Send log message to global logger instance
+		void broadcast(const char*, const fmt_type_info*, const u64*);
 	};
 
-	// Send log message to global logger instance
-	void broadcast(const channel& ch, level sev, const std::string& text);
+	class listener
+	{
+		// Next listener (linked list)
+		atomic_t<listener*> m_next{};
 
-	// Log channel (source)
+		friend struct message;
+
+	public:
+		constexpr listener() = default;
+
+		virtual ~listener();
+
+		// Process log message
+		virtual void log(u64 stamp, const message& msg, const std::string& prefix, const std::string& text) = 0;
+
+		// Add new listener
+		static void add(listener*);
+	};
+
 	struct channel
 	{
-		// Channel prefix (also used for identification)
-		const std::string name;
+		// Channel prefix (added to every log message)
+		const char* const name;
 
 		// The lowest logging level enabled for this channel (used for early filtering)
-		std::atomic<level> enabled;
+		atomic_t<level> enabled;
 
-		// Initialization (max level enabled by default)
-		channel(const std::string& name, level = level::trace);
-
-		virtual ~channel() = default;
-
-		// Log without formatting
-		force_inline void log(level sev, const std::string& text) const
+		// Constant initialization: channel name
+		constexpr channel(const char* name)
+			: name(name)
+			, enabled(level::_uninit)
 		{
-			if (sev <= enabled)
-				broadcast(*this, sev, text);
 		}
 
-		// Log with formatting
+		// Formatting function
 		template<typename... Args>
-		force_inline safe_buffers void format(level sev, const char* fmt, const Args&... args) const
+		SAFE_BUFFERS FORCE_INLINE void format(level sev, const char* fmt, const Args&... args)
 		{
-			if (sev <= enabled)
-				broadcast(*this, sev, fmt::format(fmt, fmt::do_unveil(args)...));
+			if (UNLIKELY(sev <= enabled))
+			{
+				message{this, sev}.broadcast(fmt, fmt::get_type_info<fmt_unveil_t<Args>...>(), fmt_args_t<Args...>{fmt_unveil<Args>::get(args)...});
+			}
 		}
 
 #define GEN_LOG_METHOD(_sev)\
 		template<typename... Args>\
-		force_inline void _sev(const char* fmt, const Args&... args)\
+		SAFE_BUFFERS void _sev(const char* fmt, const Args&... args)\
 		{\
 			return format<Args...>(level::_sev, fmt, args...);\
 		}
@@ -87,52 +95,7 @@ namespace _log
 #undef GEN_LOG_METHOD
 	};
 
-	// Log listener (destination)
-	struct listener
-	{
-		listener();
-		
-		virtual ~listener();
-
-		virtual void log(const channel& ch, level sev, const std::string& text) = 0;
-	};
-
-	class file_writer
-	{
-		// Could be memory-mapped file
-		fs::file m_file;
-
-	public:
-		file_writer(const std::string& name);
-
-		virtual ~file_writer() = default;
-
-		// Append raw data
-		void log(const std::string& text);
-
-		// Get current file size (may be used by secondary readers)
-		std::size_t size() const;
-	};
-
-	struct file_listener : public file_writer, public listener
-	{
-		file_listener(const std::string& name)
-			: file_writer(name)
-			, listener()
-		{
-		}
-
-		// Encode level, current thread name, channel name and write log message
-		virtual void log(const channel& ch, level sev, const std::string& text) override;
-	};
-
-	// Global variable for RPCS3.log
-	extern file_listener g_log_file;
-
-	// Global variable for TTY.log
-	extern file_writer g_tty_file;
-
-	// Small set of predefined channels:
+	/* Small set of predefined channels */
 
 	extern channel GENERAL;
 	extern channel LOADER;
@@ -142,14 +105,20 @@ namespace _log
 	extern channel PPU;
 	extern channel SPU;
 	extern channel ARMv7;
+
+	// Log level control: set all channels to level::notice
+	void reset();
+
+	// Log level control: register channel if necessary, set channel level
+	void set_level(const std::string&, level);
 }
 
 // Legacy:
 
-#define LOG_SUCCESS(ch, fmt, ...) _log::ch.success(fmt, ##__VA_ARGS__)
-#define LOG_NOTICE(ch, fmt, ...)  _log::ch.notice (fmt, ##__VA_ARGS__)
-#define LOG_WARNING(ch, fmt, ...) _log::ch.warning(fmt, ##__VA_ARGS__)
-#define LOG_ERROR(ch, fmt, ...)   _log::ch.error  (fmt, ##__VA_ARGS__)
-#define LOG_TODO(ch, fmt, ...)    _log::ch.todo   (fmt, ##__VA_ARGS__)
-#define LOG_TRACE(ch, fmt, ...)   _log::ch.trace  (fmt, ##__VA_ARGS__)
-#define LOG_FATAL(ch, fmt, ...)   _log::ch.fatal  (fmt, ##__VA_ARGS__)
+#define LOG_SUCCESS(ch, fmt, ...) logs::ch.success("" fmt, ##__VA_ARGS__)
+#define LOG_NOTICE(ch, fmt, ...)  logs::ch.notice ("" fmt, ##__VA_ARGS__)
+#define LOG_WARNING(ch, fmt, ...) logs::ch.warning("" fmt, ##__VA_ARGS__)
+#define LOG_ERROR(ch, fmt, ...)   logs::ch.error  ("" fmt, ##__VA_ARGS__)
+#define LOG_TODO(ch, fmt, ...)    logs::ch.todo   ("" fmt, ##__VA_ARGS__)
+#define LOG_TRACE(ch, fmt, ...)   logs::ch.trace  ("" fmt, ##__VA_ARGS__)
+#define LOG_FATAL(ch, fmt, ...)   logs::ch.fatal  ("" fmt, ##__VA_ARGS__)

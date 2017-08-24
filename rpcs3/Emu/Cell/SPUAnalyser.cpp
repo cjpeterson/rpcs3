@@ -1,24 +1,20 @@
 #include "stdafx.h"
-
-#include "Crypto/sha1.h"
-#include "SPURecompiler.h"
 #include "SPUAnalyser.h"
+#include "SPURecompiler.h"
+#include "SPUOpcodes.h"
 
-const spu_opcode_table_t<spu_itype_t> g_spu_itype{ DEFINE_SPU_OPCODES(spu_itype::), spu_itype::UNK };
+const spu_decoder<spu_itype> s_spu_itype;
 
-std::shared_ptr<spu_function_t> SPUDatabase::find(const be_t<u32>* data, u64 key, u32 max_size)
+spu_function_t* SPUDatabase::find(const be_t<u32>* data, u64 key, u32 max_size)
 {
-	for (auto found = m_db.find(key); found != m_db.end() && found->first == key; found++)
+	for (auto found = m_db.equal_range(key); found.first != found.second; found.first++)
 	{
-		if (found->second->size > max_size)
-		{
-			continue;
-		}
+		const auto& func = found.first->second;
 
 		// Compare binary data explicitly (TODO: optimize)
-		if (std::equal(found->second->data.begin(), found->second->data.end(), data))
+		if (LIKELY(func->size <= max_size) && std::memcmp(func->data.data(), data, func->size) == 0)
 		{
-			return found->second;
+			return func.get();
 		}
 	}
 
@@ -37,33 +33,37 @@ SPUDatabase::~SPUDatabase()
 	// TODO: serialize database
 }
 
-std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 entry, u32 max_limit)
+spu_function_t* SPUDatabase::analyse(const be_t<u32>* ls, u32 entry, u32 max_limit)
 {
 	// Check arguments (bounds and alignment)
 	if (max_limit > 0x40000 || entry >= max_limit || entry % 4 || max_limit % 4)
 	{
-		throw EXCEPTION("Invalid arguments (entry=0x%05x, limit=0x%05x)", entry, max_limit);
+		fmt::throw_exception("Invalid arguments (entry=0x%05x, limit=0x%05x)" HERE, entry, max_limit);
 	}
 
 	// Key for multimap
 	const u64 key = entry | u64{ ls[entry / 4] } << 32;
+	const be_t<u32>* base = ls + entry / 4;
+	const u32 block_sz = max_limit - entry;
 
 	{
 		reader_lock lock(m_mutex);
 
 		// Try to find existing function in the database
-		if (auto func = find(ls + entry / 4, key, max_limit - entry))
+		if (auto func = find(base, key, block_sz))
 		{
 			return func;
 		}
 	}
 
-	std::lock_guard<shared_mutex> lock(m_mutex);
-
-	// Double-check
-	if (auto func = find(ls + entry / 4, key, max_limit - entry))
 	{
-		return func;
+		writer_lock lock(m_mutex);
+
+		// Double-check
+		if (auto func = find(base, key, block_sz))
+		{
+			return func;
+		}
 	}
 
 	// Initialize block entries with the function entry point
@@ -83,22 +83,24 @@ std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 en
 	{
 		const spu_opcode_t op{ ls[pos / 4] };
 
-		const spu_itype_t type = g_spu_itype[op.opcode];
+		const auto type = s_spu_itype.decode(op.opcode);
 
-		using namespace spu_itype;
-
-		// Find existing function
-		if (pos != entry && find(ls + pos / 4, pos | u64{ op.opcode } << 32, limit - pos))
 		{
-			limit = pos;
-			break;
+			reader_lock lock(m_mutex);
+
+			// Find existing function
+			if (pos != entry && find(ls + pos / 4, pos | u64{ op.opcode } << 32, limit - pos))
+			{
+				limit = pos;
+				break;
+			}
 		}
 
 		// Additional analysis at the beginning of the block
 		if (start != entry && start == pos)
 		{
-			// Possible jump table
-			std::vector<u32> jt_abs, jt_rel;
+			std::vector<u32> jt_abs;
+			std::vector<u32> jt_rel;
 
 			for (; pos < limit; pos += 4)
 			{
@@ -106,7 +108,7 @@ std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 en
 
 				if (target % 4)
 				{
-					// Misaligned address: abort analysis
+					// Address cannot be misaligned: abort jt scan
 					break;
 				}
 
@@ -174,9 +176,8 @@ std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 en
 		
 		if (type == BI || type == IRET) // Branch Indirect
 		{
-			if (type == IRET) LOG_ERROR(SPU, "[0x%05x] Interrupt Return", pos);
-
-			blocks.emplace(start); start = pos + 4;
+			blocks.emplace(start);
+			start = pos + 4;
 		}
 		else if (type == BR || type == BRA) // Branch Relative/Absolute
 		{
@@ -190,7 +191,8 @@ std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 en
 				blocks.emplace(target);
 			}
 
-			blocks.emplace(start); start = pos + 4;
+			blocks.emplace(start);
+			start = pos + 4;
 		}
 		else if (type == BRSL || type == BRASL) // Branch Relative/Absolute and Set Link
 		{
@@ -231,24 +233,9 @@ std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 en
 				blocks.emplace(target);
 			}
 		}
-		else if (type == BINZ || type == BIZ || type == BIHNZ || type == BIHZ) // Branch Indirect if (Not) Zero (Half)word
-		{
-		}
-		else if (type == HBR || type == HBRA || type == HBRR) // Hint for Branch
-		{
-		}
-		else if (type == STQA || type == STQD || type == STQR || type == STQX || type == FSCRWR || type == MTSPR || type == WRCH) // Store
-		{
-		}
-		else if (type == HEQ || type == HEQI || type == HGT || type == HGTI || type == HLGT || type == HLGTI) // Halt
-		{
-		}
-		else if (type == STOP || type == STOPD || type == NOP || type == LNOP || type == SYNC || type == DSYNC) // Miscellaneous
-		{
-		}
 		else // Other instructions (writing rt reg)
 		{
-			const u32 rt = type == SELB || type == SHUFB || type == MPYA || type == FNMS || type == FMA || type == FMS ? +op.rc : +op.rt;
+			const u32 rt = type & spu_itype::_quadrop ? +op.rt4 : +op.rt;
 
 			// Analyse link register access
 			if (rt == 0)
@@ -272,15 +259,9 @@ std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 en
 	{
 		const spu_opcode_t op{ ls[pos / 4] };
 
-		const spu_itype_t type = g_spu_itype[op.opcode];
+		const auto type = s_spu_itype.decode(op.opcode);
 
-		using namespace spu_itype;
-
-		if (!type) // Invalid instruction
-		{
-			break;
-		}
-		else if (type == BRSL || type == BRASL) // Branch Relative/Absolute and Set Link
+		if (type == BRSL || type == BRASL) // Branch Relative/Absolute and Set Link
 		{
 			const u32 target = spu_branch_target(type == BRSL ? pos : 0, op.i16);
 
@@ -289,6 +270,10 @@ std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 en
 				// Narrow the limit
 				limit = target;
 			}
+		}
+		else if (!type) // Invalid instruction
+		{
+			break;
 		}
 	}
 
@@ -334,10 +319,16 @@ std::shared_ptr<spu_function_t> SPUDatabase::analyse(const be_t<u32>* ls, u32 en
 	// Set whether the function can reset stack
 	func->does_reset_stack = ila_sp_pos < limit;
 
-	// Add function to the database
-	m_db.emplace(key, func);
+	// Lock here just before we write to the db
+	// Its is unlikely that the second check will pass anyway so we delay this step since compiling functions is very fast
+	{
+		writer_lock lock(m_mutex);
 
-	LOG_SUCCESS(SPU, "Function detected [0x%05x-0x%05x] (size=0x%x)", func->addr, func->addr + func->size, func->size);
+		// Add function to the database
+		m_db.emplace(key, func);
+	}
 
-	return func;
+	LOG_NOTICE(SPU, "Function detected [0x%05x-0x%05x] (size=0x%x)", func->addr, func->addr + func->size, func->size);
+
+	return func.get();
 }

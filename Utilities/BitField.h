@@ -1,140 +1,283 @@
 #pragma once
 
-// BitField access helper class (N bits from I position), intended to be put in union
-template<typename T, u32 I, u32 N> class bf_t
+#include "types.h"
+
+template<typename T, uint N>
+struct bf_base
 {
-	// Checks
-	static_assert(I < sizeof(T) * 8, "bf_t<> error: I out of bounds");
-	static_assert(N < sizeof(T) * 8, "bf_t<> error: N out of bounds");
-	static_assert(I + N <= sizeof(T) * 8, "bf_t<> error: values out of bounds");
+	using type = T;
+	using vtype = simple_t<type>;
+	using utype = typename std::make_unsigned<vtype>::type;
 
-	// Underlying data type
-	using type = typename std::remove_cv<T>::type;
+	// Datatype bitsize
+	static constexpr uint bitmax = sizeof(T) * 8; static_assert(N - 1 < bitmax, "bf_base<> error: N out of bounds");
+	
+	// Field bitsize
+	static constexpr uint bitsize = N;
 
-	// Underlying value type (native endianness)
-	using vtype = typename to_ne<type>::type;
+	// Value mask
+	static constexpr utype vmask = static_cast<utype>(~utype{} >> (bitmax - bitsize));
 
-	// Mask of size N
-	constexpr static vtype s_mask = (static_cast<vtype>(1) << N) - 1;
+	// All ones mask
+	static constexpr utype mask1 = static_cast<utype>(~utype{});
 
-	// Underlying data member
+protected:
 	type m_data;
+};
 
-	// Conversion operator helper (uses SFINAE)
-	template<typename T2, typename = void> struct converter {};
+// Bitfield accessor (N bits from I position, 0 is LSB)
+template<typename T, uint I, uint N>
+struct bf_t : bf_base<T, N>
+{
+	using type = typename bf_t::type;
+	using vtype = typename bf_t::vtype;
+	using utype = typename bf_t::utype;
 
-	template<typename T2> struct converter<T2, std::enable_if_t<std::is_unsigned<T2>::value>>
+	// Field offset
+	static constexpr uint bitpos = I; static_assert(bitpos + N <= bf_t::bitmax, "bf_t<> error: I out of bounds");
+
+	// Get bitmask of size N, at I pos
+	static constexpr utype data_mask()
+	{
+		return static_cast<utype>(static_cast<utype>(bf_t::mask1 >> (bf_t::bitmax - bf_t::bitsize)) << bitpos);
+	}
+
+	// Bitfield extraction helper
+	template<typename T2, typename = void>
+	struct extract_impl
+	{
+		static_assert(!sizeof(T2), "bf_t<> error: Invalid type");
+	};
+
+	template<typename T2>
+	struct extract_impl<T2, std::enable_if_t<std::is_unsigned<T2>::value>>
 	{
 		// Load unsigned value
-		static inline T2 convert(const type& data)
+		static constexpr T2 extract(const T& data)
 		{
-			return (data >> I) & s_mask;
+			return static_cast<T2>((static_cast<utype>(data) >> bitpos) & bf_t::vmask);
 		}
 	};
 
-	template<typename T2> struct converter<T2, std::enable_if_t<std::is_signed<T2>::value>>
+	template<typename T2>
+	struct extract_impl<T2, std::enable_if_t<std::is_signed<T2>::value>>
 	{
 		// Load signed value (sign-extended)
-		static inline T2 convert(const type& data)
+		static constexpr T2 extract(const T& data)
 		{
-			return data << (sizeof(T) * 8 - I - N) >> (sizeof(T) * 8 - N);
+			return static_cast<T2>(static_cast<vtype>(static_cast<utype>(data) << (bf_t::bitmax - bitpos - N)) >> (bf_t::bitmax - N));
 		}
 	};
 
-public:
-	// Assignment operator (store bitfield value)
-	bf_t& operator =(vtype value)
+	// Bitfield extraction
+	static constexpr vtype extract(const T& data)
 	{
-		m_data = (m_data & ~(s_mask << I)) | (value & s_mask) << I;
-		return *this;
+		return extract_impl<vtype>::extract(data);
 	}
 
-	// Conversion operator (load bitfield value)
-	operator vtype() const
+	// Bitfield insertion
+	static constexpr vtype insert(vtype value)
 	{
-		return converter<vtype>::convert(m_data);
+		return static_cast<vtype>((value & bf_t::vmask) << bitpos);
 	}
 
-	// Get raw data with mask applied
-	type unshifted() const
+	// Load bitfield value
+	constexpr operator vtype() const
 	{
-		return (m_data & (s_mask << I));
+		return extract(this->m_data);
 	}
 
-	// Optimized bool conversion
-	explicit operator bool() const
+	// Load raw data with mask applied
+	constexpr T unshifted() const
+	{
+		return static_cast<T>(this->m_data & data_mask());
+	}
+
+	// Optimized bool conversion (must be removed if inappropriate)
+	explicit constexpr operator bool() const
 	{
 		return unshifted() != 0;
 	}
 
-	// Postfix increment operator
+	// Store bitfield value
+	bf_t& operator =(vtype value)
+	{
+		this->m_data = static_cast<vtype>((this->m_data & ~data_mask()) | insert(value));
+		return *this;
+	}
+
 	vtype operator ++(int)
 	{
-		vtype result = *this;
-		*this = result + 1;
+		utype result = *this;
+		*this = static_cast<vtype>(result + 1);
 		return result;
 	}
 
-	// Prefix increment operator
 	bf_t& operator ++()
 	{
 		return *this = *this + 1;
 	}
 
-	// Postfix decrement operator
 	vtype operator --(int)
 	{
-		vtype result = *this;
-		*this = result - 1;
+		utype result = *this;
+		*this = static_cast<vtype>(result - 1);
 		return result;
 	}
 
-	// Prefix decrement operator
 	bf_t& operator --()
 	{
 		return *this = *this - 1;
 	}
 
-	// Addition assignment operator
 	bf_t& operator +=(vtype right)
 	{
 		return *this = *this + right;
 	}
 
-	// Subtraction assignment operator
 	bf_t& operator -=(vtype right)
 	{
 		return *this = *this - right;
 	}
 
-	// Multiplication assignment operator
 	bf_t& operator *=(vtype right)
 	{
 		return *this = *this * right;
 	}
 
-	// Bitwise AND assignment operator
 	bf_t& operator &=(vtype right)
 	{
-		m_data &= (right & s_mask) << I;
+		this->m_data &= static_cast<vtype>((static_cast<utype>(right) & bf_t::vmask) << bitpos);
 		return *this;
 	}
 
-	// Bitwise OR assignment operator
 	bf_t& operator |=(vtype right)
 	{
-		m_data |= (right & s_mask) << I;
+		this->m_data |= static_cast<vtype>((static_cast<utype>(right) & bf_t::vmask) << bitpos);
 		return *this;
 	}
 
-	// Bitwise XOR assignment operator
 	bf_t& operator ^=(vtype right)
 	{
-		m_data ^= (right & s_mask) << I;
+		this->m_data ^= static_cast<vtype>((static_cast<utype>(right) & bf_t::vmask) << bitpos);
 		return *this;
 	}
 };
 
-template<typename T, u32 I, u32 N> using bf_be_t = bf_t<be_t<T>, I, N>;
+// Field pack (concatenated from left to right)
+template<typename F = void, typename... Fields>
+struct cf_t : bf_base<typename F::type, F::bitsize + cf_t<Fields...>::bitsize>
+{
+	using type = typename cf_t::type;
+	using vtype = typename cf_t::vtype;
+	using utype = typename cf_t::utype;
 
-template<typename T, u32 I, u32 N> using bf_le_t = bf_t<le_t<T>, I, N>;
+	// Get disjunction of all "data" masks of concatenated values
+	static constexpr vtype data_mask()
+	{
+		return static_cast<vtype>(F::data_mask() | cf_t<Fields...>::data_mask());
+	}
+
+	// Extract all bitfields and concatenate
+	static constexpr vtype extract(const type& data)
+	{
+		return static_cast<vtype>(static_cast<utype>(F::extract(data)) << cf_t<Fields...>::bitsize | cf_t<Fields...>::extract(data));
+	}
+
+	// Split bitfields and insert them
+	static constexpr vtype insert(vtype value)
+	{
+		return static_cast<vtype>(F::insert(value >> cf_t<Fields...>::bitsize) | cf_t<Fields...>::insert(value));
+	}
+
+	// Load value
+	constexpr operator vtype() const
+	{
+		return extract(this->m_data);
+	}
+
+	// Store value
+	cf_t& operator =(vtype value)
+	{
+		this->m_data = (this->m_data & ~data_mask()) | insert(value);
+		return *this;
+	}
+};
+
+// Empty field pack (recursion terminator)
+template<>
+struct cf_t<void>
+{
+	static constexpr uint bitsize = 0;
+
+	static constexpr uint data_mask()
+	{
+		return 0;
+	}
+
+	template<typename T>
+	static constexpr auto extract(const T& data) -> decltype(+T())
+	{
+		return 0;
+	}
+
+	template<typename T>
+	static constexpr T insert(T value)
+	{
+		return 0;
+	}
+};
+
+// Fixed field (provides constant values in field pack)
+template<typename T, T V, uint N>
+struct ff_t : bf_base<T, N>
+{
+	using type = typename ff_t::type;
+	using vtype = typename ff_t::vtype;
+
+	// Return constant value
+	static constexpr vtype extract(const type& data)
+	{
+		static_assert((V & ff_t::vmask) == V, "ff_t<> error: V out of bounds");
+		return V;
+	}
+
+	// Get value
+	operator vtype() const
+	{
+		return V;
+	}
+};
+
+template<typename T, uint I, uint N>
+struct fmt_unveil<bf_t<T, I, N>, void>
+{
+	using type = typename fmt_unveil<simple_t<T>>::type;
+
+	static inline auto get(const bf_t<T, I, N>& bf)
+	{
+		return fmt_unveil<type>::get(bf);
+	}
+};
+
+template<typename F, typename... Fields>
+struct fmt_unveil<cf_t<F, Fields...>, void>
+{
+	using type = typename fmt_unveil<simple_t<typename F::type>>::type;
+
+	static inline auto get(const cf_t<F, Fields...>& cf)
+	{
+		return fmt_unveil<type>::get(cf);
+	}
+};
+
+template<typename T, T V, uint N>
+struct fmt_unveil<ff_t<T, V, N>, void>
+{
+	using type = typename fmt_unveil<simple_t<T>>::type;
+
+	static inline auto get(const ff_t<T, V, N>& ff)
+	{
+		return fmt_unveil<type>::get(ff);
+	}
+};

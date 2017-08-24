@@ -18,10 +18,14 @@ struct render_target_traits
 	using command_list_type = gsl::not_null<ID3D12GraphicsCommandList*>;
 	using download_buffer_object = std::tuple<size_t, size_t, size_t, ComPtr<ID3D12Fence>, HANDLE>; // heap offset, size, last_put_pos, fence, handle
 
+	//TODO: Move this somewhere else
+	bool depth_is_dirty = false;
+
 	static
 	ComPtr<ID3D12Resource> create_new_surface(
 		u32 address,
 		surface_color_format color_format, size_t width, size_t height,
+		ID3D12Resource* /*old*/,
 		gsl::not_null<ID3D12Device*> device, const std::array<float, 4> &clear_color, float, u8)
 	{
 		DXGI_FORMAT dxgi_format = get_color_surface_format(color_format);
@@ -70,6 +74,7 @@ struct render_target_traits
 	ComPtr<ID3D12Resource> create_new_surface(
 		u32 address,
 		surface_depth_format surfaceDepthFormat, size_t width, size_t height,
+		ID3D12Resource* /*old*/,
 		gsl::not_null<ID3D12Device*> device, const std::array<float, 4>& , float clear_depth, u8 clear_stencil)
 	{
 		D3D12_CLEAR_VALUE clear_depth_value = {};
@@ -111,16 +116,30 @@ struct render_target_traits
 		command_list->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(ds, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ));
 	}
 
+	static
+	void invalidate_rtt_surface_contents(
+		gsl::not_null<ID3D12GraphicsCommandList*>,
+		ID3D12Resource*, ID3D12Resource*, bool)
+	{}
 
 	static
-	bool rtt_has_format_width_height(const ComPtr<ID3D12Resource> &rtt, surface_color_format surface_color_format, size_t width, size_t height)
+	void invalidate_depth_surface_contents(
+		gsl::not_null<ID3D12GraphicsCommandList*>,
+		ID3D12Resource*, ID3D12Resource*, bool)
+	{
+		//TODO
+	}
+
+
+	static
+	bool rtt_has_format_width_height(const ComPtr<ID3D12Resource> &rtt, surface_color_format surface_color_format, size_t width, size_t height, bool=false)
 	{
 		DXGI_FORMAT dxgi_format = get_color_surface_format(surface_color_format);
 		return rtt->GetDesc().Format == dxgi_format && rtt->GetDesc().Width == width && rtt->GetDesc().Height == height;
 	}
 
 	static
-	bool ds_has_format_width_height(const ComPtr<ID3D12Resource> &rtt, surface_depth_format surface_depth_stencil_format, size_t width, size_t height)
+	bool ds_has_format_width_height(const ComPtr<ID3D12Resource> &rtt, surface_depth_format, size_t width, size_t height, bool=false)
 	{
 		//TODO: Check format
 		return rtt->GetDesc().Width == width && rtt->GetDesc().Height == height;
@@ -130,12 +149,12 @@ struct render_target_traits
 	std::tuple<size_t, size_t, size_t, ComPtr<ID3D12Fence>, HANDLE> issue_download_command(
 		gsl::not_null<ID3D12Resource*> rtt,
 		surface_color_format color_format, size_t width, size_t height,
-		gsl::not_null<ID3D12Device*> device, gsl::not_null<ID3D12CommandQueue*> command_queue, data_heap &readback_heap, resource_storage &res_store
+		gsl::not_null<ID3D12Device*> device, gsl::not_null<ID3D12CommandQueue*> command_queue, d3d12_data_heap &readback_heap, resource_storage &res_store
 		)
 	{
 		ID3D12GraphicsCommandList* command_list = res_store.command_list.Get();
 		DXGI_FORMAT dxgi_format = get_color_surface_format(color_format);
-		size_t row_pitch = rsx::utility::get_aligned_pitch(color_format, gsl::narrow<u32>(width));
+		size_t row_pitch = rsx::utility::get_aligned_pitch(color_format, ::narrow<u32>(width));
 
 		size_t buffer_size = row_pitch * height;
 		size_t heap_offset = readback_heap.alloc<D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT>(buffer_size);
@@ -163,7 +182,7 @@ struct render_target_traits
 	std::tuple<size_t, size_t, size_t, ComPtr<ID3D12Fence>, HANDLE> issue_depth_download_command(
 		gsl::not_null<ID3D12Resource*> ds,
 		surface_depth_format depth_format, size_t width, size_t height,
-		gsl::not_null<ID3D12Device*> device, gsl::not_null<ID3D12CommandQueue*> command_queue, data_heap &readback_heap, resource_storage &res_store
+		gsl::not_null<ID3D12Device*> device, gsl::not_null<ID3D12CommandQueue*> command_queue, d3d12_data_heap &readback_heap, resource_storage &res_store
 			)
 	{
 		ID3D12GraphicsCommandList* command_list = res_store.command_list.Get();
@@ -196,7 +215,7 @@ struct render_target_traits
 		std::tuple<size_t, size_t, size_t, ComPtr<ID3D12Fence>, HANDLE> issue_stencil_download_command(
 			gsl::not_null<ID3D12Resource*> stencil,
 			size_t width, size_t height,
-			gsl::not_null<ID3D12Device*> device, gsl::not_null<ID3D12CommandQueue*> command_queue, data_heap &readback_heap, resource_storage &res_store
+			gsl::not_null<ID3D12Device*> device, gsl::not_null<ID3D12CommandQueue*> command_queue, d3d12_data_heap &readback_heap, resource_storage &res_store
 			)
 	{
 		ID3D12GraphicsCommandList* command_list = res_store.command_list.Get();
@@ -226,7 +245,7 @@ struct render_target_traits
 
 	static
 	gsl::span<const gsl::byte> map_downloaded_buffer(const std::tuple<size_t, size_t, size_t, ComPtr<ID3D12Fence>, HANDLE> &sync_data,
-		gsl::not_null<ID3D12Device*> device, gsl::not_null<ID3D12CommandQueue*> command_queue, data_heap &readback_heap, resource_storage &res_store)
+		gsl::not_null<ID3D12Device*>, gsl::not_null<ID3D12CommandQueue*>, d3d12_data_heap &readback_heap, resource_storage&)
 	{
 		size_t offset;
 		size_t buffer_size;
@@ -238,12 +257,12 @@ struct render_target_traits
 
 		readback_heap.m_get_pos = current_put_pos_minus_one;
 		const gsl::byte *mapped_buffer = readback_heap.map<const gsl::byte>(CD3DX12_RANGE(offset, offset + buffer_size));
-		return { mapped_buffer , gsl::narrow<int>(buffer_size) };
+		return { mapped_buffer , ::narrow<int>(buffer_size) };
 	}
 
 	static
-	void unmap_downloaded_buffer(const std::tuple<size_t, size_t, size_t, ComPtr<ID3D12Fence>, HANDLE> &sync_data,
-		gsl::not_null<ID3D12Device*> device, gsl::not_null<ID3D12CommandQueue*> command_queue, data_heap &readback_heap, resource_storage &res_store)
+	void unmap_downloaded_buffer(const std::tuple<size_t, size_t, size_t, ComPtr<ID3D12Fence>, HANDLE> &,
+		gsl::not_null<ID3D12Device*>, gsl::not_null<ID3D12CommandQueue*>, d3d12_data_heap &readback_heap, resource_storage&)
 	{
 		readback_heap.unmap();
 	}

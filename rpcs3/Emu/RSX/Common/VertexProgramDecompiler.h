@@ -1,6 +1,7 @@
 #pragma once
 #include "Emu/RSX/RSXVertexProgram.h"
 #include <vector>
+#include <set>
 #include <sstream>
 #include "ShaderParam.h"
 
@@ -60,6 +61,7 @@ struct VertexProgramDecompiler
 	const std::vector<u32>& m_data;
 	ParamArray m_parr;
 
+	std::string NotZeroPositive(const std::string& code);
 	std::string GetMask(bool is_sca);
 	std::string GetVecMask();
 	std::string GetScaMask();
@@ -68,6 +70,7 @@ struct VertexProgramDecompiler
 	std::string GetFunc();
 	std::string GetTex();
 	std::string GetCond();
+	std::string GetOptionalBranchCond();	//Conditional branch expression modified externally at runtime
 	std::string AddAddrMask();
 	std::string AddAddrReg();
 	std::string AddAddrRegWithoutMask();
@@ -96,7 +99,7 @@ protected:
 	*/
 	virtual std::string getFunction(FUNCTION) = 0;
 
-	/** returns string calling comparaison function on 2 args passed as strings.
+	/** returns string calling comparison function on 2 args passed as strings.
 	*/
 	virtual std::string compareFunction(COMPARE, const std::string &, const std::string &) = 0;
 

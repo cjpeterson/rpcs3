@@ -1,5 +1,7 @@
 #pragma once
 
+// TODO: HLE info (constants, structs, etc.) should not be available here
+
 enum PortStatus
 {
 	CELL_PAD_STATUS_DISCONNECTED   = 0x00000000,
@@ -85,6 +87,7 @@ static const u32 CELL_MAX_PADS = 127;
 static const u32 CELL_PAD_MAX_PORT_NUM = 7;
 static const u32 CELL_PAD_MAX_CODES = 64;
 static const u32 CELL_PAD_MAX_CAPABILITY_INFO = 32;
+static const u32 CELL_PAD_ACTUATOR_MAX = 2;
 
 struct Button
 {
@@ -122,6 +125,28 @@ struct AnalogStick
 	}
 };
 
+struct AnalogSensor
+{
+	u32 m_offset;
+	u16 m_value;
+
+	AnalogSensor(u32 offset, u16 value)
+		: m_offset(offset)
+		, m_value(value)
+	{}
+};
+
+struct VibrateMotor
+{
+	bool m_isLargeMotor;
+	u16 m_value;
+
+	VibrateMotor(bool largeMotor, u16 value)
+		: m_isLargeMotor(largeMotor)
+		, m_value(value)
+	{}
+};
+
 struct Pad
 {
 	bool m_buffer_cleared;
@@ -132,6 +157,8 @@ struct Pad
 
 	std::vector<Button> m_buttons;
 	std::vector<AnalogStick> m_sticks;
+	std::vector<AnalogSensor> m_sensors;
+	std::vector<VibrateMotor> m_vibrateMotors;
 
 	//These hold bits for their respective buttons
 	u16 m_digital_1;
@@ -191,10 +218,10 @@ struct Pad
 		, m_press_R1(0)
 		, m_press_R2(0)
 
-		, m_sensor_x(0)
+		, m_sensor_x(512)
 		, m_sensor_y(399)
-		, m_sensor_z(0)
-		, m_sensor_g(0)
+		, m_sensor_z(512)
+		, m_sensor_g(512)
 	{
 	}
 };
@@ -213,8 +240,7 @@ protected:
 	std::vector<Pad> m_pads;
 
 public:
-	virtual void Init(const u32 max_connect)=0;
-	virtual void Close()=0;
+	virtual void Init(const u32 max_connect) = 0;
 	virtual ~PadHandlerBase() = default;
 
 	//Set value to set pressure/axi to certain level, otherwise 0/255 default
@@ -226,9 +252,6 @@ public:
 			{
 				if (button.m_keyCode != code)
 					continue;
-
-				//This is for reporting when a controller connects/disconnects, shouldn't be here
-				//pad.m_port_status |= CELL_PAD_STATUS_ASSIGN_CHANGES;
 
 				if (value >= 256){ value = 255; }
 
@@ -273,8 +296,9 @@ public:
 		}
 	}
 
-	PadInfo& GetInfo() { return m_info; }
-	std::vector<Pad>& GetPads() { return m_pads; }
+	virtual PadInfo& GetInfo() { return m_info; }
+	virtual std::vector<Pad>& GetPads() { return m_pads; }
+	virtual void SetRumble(const u32 pad, u8 largeMotor, bool smallMotor) {};
 	std::vector<Button>& GetButtons(const u32 pad) { return m_pads[pad].m_buttons; }
 	std::vector<AnalogStick>& GetSticks(const u32 pad) { return m_pads[pad].m_sticks; }
 };

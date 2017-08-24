@@ -5,15 +5,16 @@
 namespace asmjit
 {
 	struct JitRuntime;
+	struct CodeHolder;
 	struct X86Compiler;
-	struct X86GpVar;
-	struct X86XmmVar;
+	struct X86Gp;
+	struct X86Xmm;
 	struct X86Mem;
 	struct Label;
 }
 
 // SPU ASMJIT Recompiler
-class spu_recompiler : public SPURecompilerBase
+class spu_recompiler : public spu_recompiler_base
 {
 	const std::shared_ptr<asmjit::JitRuntime> m_jit;
 
@@ -25,17 +26,18 @@ public:
 private:
 	// emitter:
 	asmjit::X86Compiler* c;
+	asmjit::CodeHolder* codeHolder;
 
 	// input:
-	asmjit::X86GpVar* cpu;
-	asmjit::X86GpVar* ls;
+	asmjit::X86Gp* cpu;
+	asmjit::X86Gp* ls;
 
 	// temporary:
-	asmjit::X86GpVar* addr;
-	asmjit::X86GpVar* qw0;
-	asmjit::X86GpVar* qw1;
-	asmjit::X86GpVar* qw2;
-	std::array<asmjit::X86XmmVar*, 6> vec;
+	asmjit::X86Gp* addr;
+	asmjit::X86Gp* qw0;
+	asmjit::X86Gp* qw1;
+	asmjit::X86Gp* qw2;
+	std::array<asmjit::X86Xmm*, 6> vec;
 
 	// labels:
 	asmjit::Label* labels; // array[0x10000]
@@ -44,10 +46,10 @@ private:
 
 	class XmmLink
 	{
-		asmjit::X86XmmVar* m_var;
+		asmjit::X86Xmm* m_var;
 
 	public:
-		XmmLink(asmjit::X86XmmVar*& xmm_var)
+		XmmLink(asmjit::X86Xmm*& xmm_var)
 			: m_var(xmm_var)
 		{
 			xmm_var = nullptr;
@@ -55,7 +57,7 @@ private:
 
 		XmmLink(XmmLink&&) = default; // MoveConstructible + delete copy constructor and copy/move operators
 
-		operator asmjit::X86XmmVar&() const
+		operator asmjit::X86Xmm&() const
 		{
 			return *m_var;
 		}
@@ -75,7 +77,7 @@ private:
 	asmjit::X86Mem XmmConst(__m128 data);
 	asmjit::X86Mem XmmConst(__m128i data);
 
-private:
+public:
 	void InterpreterCall(spu_opcode_t op);
 	void FunctionCall();
 
@@ -280,6 +282,4 @@ private:
 	void FMS(spu_opcode_t op);
 
 	void UNK(spu_opcode_t op);
-
-	static const spu_opcode_table_t<void(spu_recompiler::*)(spu_opcode_t)> opcodes;
 };

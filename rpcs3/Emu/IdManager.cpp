@@ -1,156 +1,94 @@
 #include "stdafx.h"
 #include "IdManager.h"
 
-namespace idm
+shared_mutex id_manager::g_mutex;
+
+thread_local DECLARE(idm::g_id);
+DECLARE(idm::g_map);
+DECLARE(fxm::g_vec);
+
+id_manager::id_map::pointer idm::allocate_id(const id_manager::id_key& info, u32 base, u32 step, u32 count)
 {
-	shared_mutex g_mutex;
+	// Base type id is stored in value
+	auto& vec = g_map[info.value()];
 
-	idm::map_t g_map;
+	// Preallocate memory
+	vec.reserve(count);
 
-	u32 g_last_raw_id = 0;
+	if (vec.size() < count)
+	{
+		// Try to emplace back
+		const u32 _next = base + step * ::size32(vec);
 
-	thread_local u32 g_tls_last_id = 0xdeadbeef;
+		if (_next >= base && _next < base + step * count)
+		{
+			g_id = _next;
+			vec.emplace_back(id_manager::id_key(_next, info.type(), info.on_stop()), nullptr);
+			return &vec.back();
+		}
+	}
+
+	// Check all IDs starting from "next id" (TODO)
+	for (u32 i = 0, next = base; i < count; i++, next += step)
+	{
+		const auto ptr = &vec[i];
+
+		// Look for free ID
+		if (!ptr->second)
+		{
+			g_id = next;
+			ptr->first = id_manager::id_key(next, info.type(), info.on_stop());
+			return ptr;
+		}
+	}
+
+	// Out of IDs
+	return nullptr;
 }
 
-namespace fxm
+void idm::init()
 {
-	shared_mutex g_mutex;
-
-	fxm::map_t g_map;
+	// Allocate
+	g_map.resize(id_manager::typeinfo::get_count());
+	idm::clear();
 }
 
 void idm::clear()
 {
-	std::lock_guard<shared_mutex> lock(g_mutex);
-
 	// Call recorded finalization functions for all IDs
-	for (auto& id : idm::map_t(std::move(g_map)))
+	for (auto& map : g_map)
 	{
-		(*id.second.type_index)(id.second.data.get());
-	}
-
-	g_last_raw_id = 0;
-}
-
-bool idm::check(u32 in_id, id_type_index_t type)
-{
-	reader_lock lock(g_mutex);
-
-	const auto found = g_map.find(in_id);
-
-	return found != g_map.end() && found->second.type_index == type;
-}
-
-const std::type_info* idm::get_type(u32 raw_id)
-{
-	reader_lock lock(g_mutex);
-
-	const auto found = g_map.find(raw_id);
-
-	return found == g_map.end() ? nullptr : found->second.info;
-}
-
-std::shared_ptr<void> idm::get(u32 in_id, id_type_index_t type)
-{
-	reader_lock lock(g_mutex);
-
-	const auto found = g_map.find(in_id);
-
-	if (found == g_map.end() || found->second.type_index != type)
-	{
-		return nullptr;
-	}
-
-	return found->second.data;
-}
-
-idm::map_t idm::get_all(id_type_index_t type)
-{
-	reader_lock lock(g_mutex);
-
-	idm::map_t result;
-
-	for (auto& id : g_map)
-	{
-		if (id.second.type_index == type)
+		for (auto& pair : map)
 		{
-			result.insert(id);
+			if (auto ptr = pair.second.get())
+			{
+				pair.first.on_stop()(ptr);
+				pair.second.reset();
+				pair.first = {};
+			}
 		}
-	}
 
-	return result;
+		map.clear();
+	}
 }
 
-std::shared_ptr<void> idm::withdraw(u32 in_id, id_type_index_t type)
+void fxm::init()
 {
-	std::lock_guard<shared_mutex> lock(g_mutex);
-
-	const auto found = g_map.find(in_id);
-
-	if (found == g_map.end() || found->second.type_index != type)
-	{
-		return nullptr;
-	}
-
-	auto ptr = std::move(found->second.data);
-
-	g_map.erase(found);
-
-	return ptr;
+	// Allocate
+	g_vec.resize(id_manager::typeinfo::get_count());
+	fxm::clear();
 }
-
-u32 idm::get_count(id_type_index_t type)
-{
-	reader_lock lock(g_mutex);
-
-	u32 result = 0;
-
-	for (auto& id : g_map)
-	{
-		if (id.second.type_index == type)
-		{
-			result++;
-		}
-	}
-
-	return result;
-}
-
 
 void fxm::clear()
 {
-	std::lock_guard<shared_mutex> lock(g_mutex);
-
 	// Call recorded finalization functions for all IDs
-	for (auto& id : fxm::map_t(std::move(g_map)))
+	for (auto& pair : g_vec)
 	{
-		if (id.second) (*id.first)(id.second.get());
+		if (auto ptr = pair.second.get())
+		{
+			pair.first(ptr);
+			pair.second.reset();
+			pair.first = nullptr;
+		}
 	}
-}
-
-bool fxm::check(id_type_index_t type)
-{
-	reader_lock lock(g_mutex);
-
-	const auto found = g_map.find(type);
-
-	return found != g_map.end() && found->second;
-}
-
-std::shared_ptr<void> fxm::get(id_type_index_t type)
-{
-	reader_lock lock(g_mutex);
-
-	const auto found = g_map.find(type);
-
-	return found != g_map.end() ? found->second : nullptr;
-}
-
-std::shared_ptr<void> fxm::withdraw(id_type_index_t type)
-{
-	std::unique_lock<shared_mutex> lock(g_mutex);
-
-	const auto found = g_map.find(type);
-
-	return found != g_map.end() ? std::move(found->second) : nullptr;
 }

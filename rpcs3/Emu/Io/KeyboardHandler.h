@@ -1,5 +1,7 @@
 #pragma once
 
+// TODO: HLE info (constants, structs, etc.) should not be available here
+
 extern u16 cellKbCnvRawCode(u32 arrange, u32 mkey, u32 led, u16 rawcode); // (TODO: Can it be problematic to place SysCalls in middle of nowhere?)
 
 enum KbPortStatus
@@ -187,6 +189,7 @@ enum CellKbMappingType
 	CELL_KB_MAPPING_BELGIAN_BELGIUM,
 	CELL_KB_MAPPING_POLISH_POLAND,
 	CELL_KB_MAPPING_PORTUGUESE_BRAZIL,
+	CELL_KB_MAPPING_TURKISH_TURKEY
 };
 
 static const u32 KB_MAX_KEYBOARDS = 127;
@@ -263,8 +266,8 @@ protected:
 	std::vector<Keyboard> m_keyboards;
 
 public:
-	virtual void Init(const u32 max_connect)=0;
-	virtual void Close()=0;
+	virtual void Init(const u32 max_connect) = 0;
+
 	virtual ~KeyboardHandlerBase() = default;
 
 	void Key(const u32 code, bool pressed)

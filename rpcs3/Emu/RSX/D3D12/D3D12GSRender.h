@@ -1,7 +1,6 @@
 #pragma once
 
 #include "D3D12Utils.h"
-#include "Utilities/rPlatform.h" // only for rImage
 #include "Emu/Memory/Memory.h"
 #include "Emu/System.h"
 #include "Emu/RSX/GSRender.h"
@@ -55,17 +54,13 @@ private:
 	ComPtr<struct IDXGISwapChain3> m_swap_chain;
 	ComPtr<ID3D12Resource> m_backbuffer[2];
 	ComPtr<ID3D12DescriptorHeap> m_backbuffer_descriptor_heap[2];
-	// m_rootSignatures[N] is RS with N texture/sample
-	ComPtr<ID3D12RootSignature> m_root_signatures[17][17]; // indexed by [texture count][vertex count]
+
+	ComPtr<ID3D12RootSignature> m_shared_root_signature;
 
 	// TODO: Use a tree structure to parse more efficiently
 	data_cache m_texture_cache;
 	bool invalidate_address(u32 addr);
 
-	rsx::surface_info m_surface;
-
-	RSXVertexProgram m_vertex_program;
-	RSXFragmentProgram m_fragment_program;
 	PipelineStateObjectCache m_pso_cache;
 	std::tuple<ComPtr<ID3D12PipelineState>, size_t, size_t> m_current_pso;
 
@@ -101,20 +96,13 @@ private:
 	 */
 	shader m_output_scaling_pass;
 
-	/**
-	 * Data used when depth buffer is converted to uchar textures.
-	 */
-	ID3D12PipelineState *m_convert_pso;
-	ID3D12RootSignature *m_convert_root_signature;
-	void init_convert_shader();
-
 	resource_storage m_per_frame_storage[2];
 	resource_storage &get_current_resource_storage();
 	resource_storage &get_non_current_resource_storage();
 
 	// Textures, constants, index and vertex buffers storage
-	data_heap m_buffer_data;
-	data_heap m_readback_resources;
+	d3d12_data_heap m_buffer_data;
+	d3d12_data_heap m_readback_resources;
 	ComPtr<ID3D12Resource> m_vertex_buffer_data;
 
 	rsx::render_targets m_rtts;
@@ -128,8 +116,10 @@ private:
 	ID3D12Resource *m_dummy_texture;
 
 	// Currently used shader resources / samplers descriptor
-	std::array<std::tuple<ID3D12Resource*, D3D12_SHADER_RESOURCE_VIEW_DESC>, 16> m_current_shader_resources = {};
-	std::array<D3D12_SAMPLER_DESC, 16> m_current_samplers = {};
+	u32 m_current_transform_constants_buffer_descriptor_id;
+	ComPtr<ID3D12DescriptorHeap> m_current_texture_descriptors;
+	ComPtr<ID3D12DescriptorHeap> m_current_sampler_descriptors;
+
 public:
 	D3D12GSRender();
 	virtual ~D3D12GSRender();
@@ -149,26 +139,16 @@ private:
 	*/
 	std::tuple<bool, size_t, std::vector<D3D12_SHADER_RESOURCE_VIEW_DESC> > upload_and_set_vertex_index_data(ID3D12GraphicsCommandList *command_list);
 
-	/**
-	 * Upload all enabled vertex attributes for vertex in ranges described by vertex_ranges.
-	 * A range in vertex_range is a pair whose first element is the index of the beginning of the
-	 * range, and whose second element is the number of vertex in this range.
-	 */
-	std::vector<D3D12_SHADER_RESOURCE_VIEW_DESC> upload_vertex_attributes(const std::vector<std::pair<u32, u32> > &vertex_ranges,
-		gsl::not_null<ID3D12GraphicsCommandList*> command_list);
-
-	std::tuple<D3D12_INDEX_BUFFER_VIEW, size_t> generate_index_buffer_for_emulated_primitives_array(const std::vector<std::pair<u32, u32> > &vertex_ranges);
-
 	void upload_and_bind_scale_offset_matrix(size_t descriptor_index);
 	void upload_and_bind_vertex_shader_constants(size_t descriptor_index);
-	void upload_and_bind_fragment_shader_constants(size_t descriptorIndex);
+	D3D12_CONSTANT_BUFFER_VIEW_DESC upload_fragment_shader_constants();
 	/**
 	 * Fetch all textures recorded in the state in the render target cache and in the texture cache.
 	 * If a texture is not cached, populate cmdlist with uploads command.
 	 * Create necessary resource view/sampler descriptors in the per frame storage struct.
 	 * If the count of enabled texture is below texture_count, fills with dummy texture and sampler.
 	 */
-	void upload_and_bind_textures(ID3D12GraphicsCommandList *command_list, size_t texture_count);
+	void upload_textures(ID3D12GraphicsCommandList *command_list, size_t texture_count);
 
 	/**
 	 * Creates render target if necessary.
@@ -191,6 +171,7 @@ private:
 	void copy_render_target_to_dma_location();
 
 protected:
+	virtual void on_init_thread() override;
 	virtual void on_exit() override;
 	virtual bool do_method(u32 cmd, u32 arg) override;
 	virtual void end() override;

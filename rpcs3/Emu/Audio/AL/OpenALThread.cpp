@@ -1,6 +1,5 @@
 #include "stdafx.h"
 #include "Emu/System.h"
-#include "Emu/state.h"
 
 #include "OpenALThread.h"
 
@@ -32,30 +31,36 @@ void printAlcError(ALCenum err, const char* situation)
 	}
 }
 
-OpenALThread::~OpenALThread()
+OpenALThread::OpenALThread()
 {
-	Quit();
-}
-
-void OpenALThread::Init()
-{
-	m_device = alcOpenDevice(nullptr);
+	ALCdevice* m_device = alcOpenDevice(nullptr);
 	checkForAlcError("alcOpenDevice");
 
-	m_context = alcCreateContext(m_device, nullptr);
+	ALCcontext* m_context = alcCreateContext(m_device, nullptr);
 	checkForAlcError("alcCreateContext");
 
 	alcMakeContextCurrent(m_context);
 	checkForAlcError("alcMakeContextCurrent");
+
+	if (g_cfg.audio.downmix_to_2ch)
+	{
+		m_format = g_cfg.audio.convert_to_u16 ? AL_FORMAT_STEREO16 : AL_FORMAT_STEREO_FLOAT32;
+	}
+	else
+	{
+		m_format = g_cfg.audio.convert_to_u16 ? AL_FORMAT_71CHN16 : AL_FORMAT_71CHN32;
+	}
 }
 
-void OpenALThread::Quit()
+OpenALThread::~OpenALThread()
 {
-	m_context = alcGetCurrentContext();
-	m_device = alcGetContextsDevice(m_context);
-	alcMakeContextCurrent(nullptr);
-	alcDestroyContext(m_context);
-	alcCloseDevice(m_device);
+	if (ALCcontext* m_context = alcGetCurrentContext())
+	{
+		ALCdevice* m_device = alcGetContextsDevice(m_context);
+		alcMakeContextCurrent(nullptr);
+		alcDestroyContext(m_context);
+		alcCloseDevice(m_device);
+	}
 }
 
 void OpenALThread::Play()
@@ -103,7 +108,7 @@ void OpenALThread::Open(const void* src, int size)
 
 	for (uint i = 0; i<g_al_buffers_count; ++i)
 	{
-		alBufferData(m_buffers[i], rpcs3::config.audio.convert_to_u16.value() ? AL_FORMAT_71CHN16 : AL_FORMAT_71CHN32, src, m_buffer_size, 48000);
+		alBufferData(m_buffers[i], m_format, src, m_buffer_size, 48000);
 		checkForAlError("alBufferData");
 	}
 
@@ -138,7 +143,7 @@ void OpenALThread::AddData(const void* src, int size)
 
 		int bsize = size < m_buffer_size ? size : m_buffer_size;
 
-		alBufferData(buffer, rpcs3::config.audio.convert_to_u16.value() ? AL_FORMAT_71CHN16 : AL_FORMAT_71CHN32, bsrc, bsize, 48000);
+		alBufferData(buffer, m_format, bsrc, bsize, 48000);
 		checkForAlError("alBufferData");
 
 		alSourceQueueBuffers(m_source, 1, &buffer);
